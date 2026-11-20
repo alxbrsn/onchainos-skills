@@ -1131,11 +1131,7 @@ fn delivery_context_path(job_id: &str, delivery_id: &str) -> anyhow::Result<Path
     if !delivery_id_is_safe(delivery_id) {
         anyhow::bail!("invalid delivery id");
     }
-    Ok(crate::home::onchainos_home()?
-        .join("autotrade")
-        .join("delivery-context")
-        .join(job_id)
-        .join(format!("{delivery_id}.json")))
+    super::delivery_state_path("delivery-context", job_id, delivery_id, ".json")
 }
 
 fn pending_delivery_path(job_id: &str) -> anyhow::Result<PathBuf> {
@@ -1701,6 +1697,8 @@ mod tests {
             )
             .unwrap();
             assert_eq!(saved.delivery_id, "msg:abc123");
+            let path = delivery_context_path("job1", "msg:abc123").unwrap();
+            assert!(!path.file_name().unwrap().to_str().unwrap().contains(':'));
             assert_eq!(saved.execution_path, SubscriptionTradePath::LegacyWrapper);
             assert_eq!(
                 saved.origin_session_key.as_deref(),
@@ -1758,6 +1756,8 @@ mod tests {
                 "receivedAtMs": 1234
             });
             let path = delivery_context_path("job1", "msg:v1").unwrap();
+            #[cfg(unix)]
+            let path = path.with_file_name("msg:v1.json");
             crate::home::write_secure(&path, v1.to_string().as_bytes()).unwrap();
             assert_eq!(
                 load_delivery_context("job1", "msg:v1")

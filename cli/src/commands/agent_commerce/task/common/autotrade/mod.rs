@@ -11,6 +11,10 @@
 //!   model-selected Skill/tool;
 //! - compatibility rendering for decisions produced by earlier releases.
 
+use std::path::PathBuf;
+
+use sha2::{Digest, Sha256};
+
 pub(crate) mod amount;
 pub(crate) mod card;
 pub(crate) mod consent;
@@ -25,6 +29,32 @@ pub(crate) mod subscription;
 pub(crate) mod subscription_config;
 pub(crate) mod tooling;
 pub(crate) mod trade_kit;
+
+fn delivery_state_path(
+    store: &str,
+    job_id: &str,
+    delivery_id: &str,
+    suffix: &str,
+) -> anyhow::Result<PathBuf> {
+    let directory = crate::home::onchainos_home()?
+        .join("autotrade")
+        .join(store)
+        .join(job_id);
+    if !delivery_id.contains(':') {
+        return Ok(directory.join(format!("{delivery_id}{suffix}")));
+    }
+    // Keep using existing Unix state so an upgrade preserves execution deduplication.
+    #[cfg(unix)]
+    {
+        let legacy = directory.join(format!("{delivery_id}{suffix}"));
+        if legacy.try_exists()? {
+            return Ok(legacy);
+        }
+    }
+    // '%' is outside the validated ID alphabet, so hashed keys cannot alias raw IDs.
+    let hash = hex::encode(Sha256::digest(delivery_id));
+    Ok(directory.join(format!("%{hash}{suffix}")))
+}
 
 pub const DEFAULT_AUTOTRADE_TTL_SEC: u64 = 31_536_000;
 

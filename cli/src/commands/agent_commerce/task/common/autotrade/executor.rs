@@ -173,33 +173,21 @@ fn outcome_path(job_id: &str, delivery_id: &str) -> Result<PathBuf> {
     if !grants::job_id_is_safe(job_id) || !safe_delivery_id(delivery_id) {
         bail!("invalid job or delivery id");
     }
-    Ok(crate::home::onchainos_home()?
-        .join("autotrade")
-        .join("outcomes")
-        .join(job_id)
-        .join(format!("{delivery_id}.json")))
+    super::delivery_state_path("outcomes", job_id, delivery_id, ".json")
 }
 
 fn latch_path(job_id: &str, delivery_id: &str) -> Result<PathBuf> {
     if !grants::job_id_is_safe(job_id) || !safe_delivery_id(delivery_id) {
         bail!("invalid job or delivery id");
     }
-    Ok(crate::home::onchainos_home()?
-        .join("autotrade")
-        .join("execution-latch")
-        .join(job_id)
-        .join(delivery_id))
+    super::delivery_state_path("execution-latch", job_id, delivery_id, "")
 }
 
 fn terminal_journal_path(job_id: &str, delivery_id: &str) -> Result<PathBuf> {
     if !grants::job_id_is_safe(job_id) || !safe_delivery_id(delivery_id) {
         bail!("invalid job or delivery id");
     }
-    Ok(crate::home::onchainos_home()?
-        .join("autotrade")
-        .join("terminal-journal")
-        .join(job_id)
-        .join(format!("{delivery_id}.json")))
+    super::delivery_state_path("terminal-journal", job_id, delivery_id, ".json")
 }
 
 fn notice_index_root() -> Result<PathBuf> {
@@ -1408,11 +1396,13 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = test_tempdir();
         std::env::set_var("ONCHAINOS_HOME", temp.path());
-        let path = outcome_path("job1", "delivery-index").unwrap();
+        let delivery_id = "msg:abc123";
+        let path = outcome_path("job1", delivery_id).unwrap();
+        assert!(!path.file_name().unwrap().to_str().unwrap().contains(':'));
         let mut outcome = ExecutionOutcome {
             version: OUTCOME_VERSION,
             job_id: "job1".to_string(),
-            delivery_id: "delivery-index".to_string(),
+            delivery_id: delivery_id.to_string(),
             venue: "dex".to_string(),
             action: "buy".to_string(),
             amount: "1".to_string(),
@@ -1428,7 +1418,11 @@ mod tests {
             updated_at: now_secs(),
         };
         write_outcome(&path, &outcome).unwrap();
-        let index = notice_ref_path("job1", "delivery-index").unwrap();
+        assert_eq!(
+            read_outcome(&path).unwrap().unwrap().delivery_id,
+            delivery_id
+        );
+        let index = notice_ref_path("job1", delivery_id).unwrap();
         assert!(index.exists());
         outcome.notification_pending = false;
         write_outcome(&path, &outcome).unwrap();
@@ -1436,6 +1430,12 @@ mod tests {
         assert!(
             path.exists(),
             "terminal outcome remains an idempotency tombstone"
+        );
+        let journal = write_terminal_journal(&outcome).unwrap();
+        assert!(!journal.file_name().unwrap().to_str().unwrap().contains(':'));
+        assert_eq!(
+            read_terminal_journal(&journal).unwrap().outcome.delivery_id,
+            delivery_id
         );
         std::env::remove_var("ONCHAINOS_HOME");
     }
@@ -1561,20 +1561,27 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = test_tempdir();
         std::env::set_var("ONCHAINOS_HOME", temp.path());
+        let delivery_id = "msg:abc123";
         assert_eq!(
-            recovery_state("job-phase", "delivery-1").unwrap(),
+            recovery_state("job-phase", delivery_id).unwrap(),
             RecoveryState::NoExecution
         );
-        assert!(reserve_execution("job-phase", "delivery-1").unwrap());
+        assert!(reserve_execution("job-phase", delivery_id).unwrap());
+        let path = latch_path("job-phase", delivery_id).unwrap();
+        assert!(!path.file_name().unwrap().to_str().unwrap().contains(':'));
         assert_eq!(
-            recovery_state("job-phase", "delivery-1").unwrap(),
+            recovery_state("job-phase", delivery_id).unwrap(),
             RecoveryState::PreSubmitInterrupted
         );
-        update_execution_phase("job-phase", "delivery-1", ExecutionPhase::Spawned).unwrap();
+        update_execution_phase("job-phase", delivery_id, ExecutionPhase::Spawned).unwrap();
+        // An already-spawned latch from before the fix must still block execution.
+        #[cfg(unix)]
+        std::fs::rename(&path, path.with_file_name(delivery_id)).unwrap();
         assert_eq!(
-            recovery_state("job-phase", "delivery-1").unwrap(),
+            recovery_state("job-phase", delivery_id).unwrap(),
             RecoveryState::SubmissionUnknown
         );
+        assert!(!reserve_execution("job-phase", delivery_id).unwrap());
         std::env::remove_var("ONCHAINOS_HOME");
     }
 
